@@ -1,0 +1,15 @@
+certifi==2021.10.8
+charset-normalizer==2.0.12
+idna==3.3
+numpy==1.22.3
+Pillow==9.1.0
+plumbum==1.7.2
+pysyncobj==0.3.10
+requests==2.27.1
+rpyc==5.1.0
+torch==1.11.0+cu113
+torchaudio==0.11.0+cu113
+torchvision==0.12.0+cu113
+tqdm==4.64.0
+typing-extensions==4.2.0
+urllib3==1.26.9
