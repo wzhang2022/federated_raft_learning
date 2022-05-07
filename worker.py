@@ -24,9 +24,10 @@ def train(model, device, train_loader, optimizer, conn):
         for param in model.parameters():
             grads.append(param.grad.cpu().numpy())
         conn.root.send_gradient(grads)
-        if batch_idx % 5 == 4:
-            assert conn.root.get_server_availability()
+        if batch_idx % 5 == 0:
             get_model_weights_from_server(model, conn)
+        if batch_idx % 20 == 0:
+            conn.root.get_server_availability()
 
 
 def test(model, device, test_loader, epoch):

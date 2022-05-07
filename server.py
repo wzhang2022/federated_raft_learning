@@ -23,7 +23,7 @@ class SyncNet(SyncObj):
             conf=conf
         )
         self.params = list(map(lambda x: x.data.numpy(), net.parameters()))
-        self.lr = 0.0001
+        self.lr = 0.001
         self.epoch = 0
         self.time = time.time()
 
@@ -32,7 +32,7 @@ class SyncNet(SyncObj):
     def update_all_gradients(self, gradients):
         for i, grad in enumerate(gradients):
             assert isinstance(grad, np.ndarray)
-            self.params[i] -= grad.clip(-0.1, 0.1) * 0.001
+            self.params[i] -= grad.clip(-0.1, 0.1) * self.lr
 
     @replicated
     def update_epoch(self):
