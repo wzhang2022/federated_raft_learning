@@ -1,15 +1,12 @@
 import argparse
 
 import rpyc
-import traceback
 
 from utils import Net
-from pysyncobj import SyncObj, replicated, SyncObjConf
+from pysyncobj import SyncObj, replicated, SyncObjConf, SyncObjException
 
 import numpy as np
-from math import ceil
 import time
-from threading import Lock
 
 
 net = Net()
@@ -27,7 +24,6 @@ class SyncNet(SyncObj):
         self.epoch = 0
         self.time = time.time()
 
-
     @replicated
     def update_all_gradients(self, gradients):
         for i, grad in enumerate(gradients):
@@ -35,13 +31,18 @@ class SyncNet(SyncObj):
             self.params[i] -= grad.clip(-0.1, 0.1) * self.lr
 
     @replicated
+    def update_params(self, params):
+        for i, param in enumerate(params):
+            assert isinstance(param, np.ndarray)
+            self.params[i] = param
+
+    @replicated
     def update_epoch(self):
         self.epoch += 1
         print(f"Epoch {self.epoch} completed in {time.time() - self.time} seconds")
         self.time = time.time()
-        if self.epoch % 10 == 0:
-            self.forceLogCompaction()
 
+    @replicated
     def get_model_params(self):
         return self.params
 
@@ -50,19 +51,22 @@ class FederatedLearningService(rpyc.Service):
     def __init__(self, synced_net: SyncNet):
         super(FederatedLearningService, self).__init__()
         self.synced_net = synced_net
-        self.mutex = Lock()
 
     def exposed_send_gradient(self, param_gradients):
-        self.mutex.acquire()
         gradients = list(map(lambda x: np.array(x), param_gradients))
         self.synced_net.update_all_gradients(gradients, sync=True)
-        self.mutex.release()
 
     def exposed_get_model_params(self):
-        self.mutex.acquire()
-        params = self.synced_net.get_model_params()
-        self.mutex.release()
+        isReady = self.synced_net.isReady()
+        if isReady:
+            params = self.synced_net.get_model_params(sync=True)
+        else:
+            raise SyncObjException
         return params
+
+    def exposed_reset_model_params(self, params):
+        gradients = list(map(lambda x: np.array(x), params))
+        self.synced_net.update_params(gradients, sync=True)
 
     def exposed_mark_epoch_done(self):
         self.synced_net.update_epoch(sync=True)

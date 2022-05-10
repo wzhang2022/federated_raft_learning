@@ -2,6 +2,9 @@ import argparse
 import time
 
 import rpyc
+from rpyc.core.async_ import AsyncResultTimeout
+
+from pysyncobj import SyncObjException
 
 import numpy as np
 import torch
@@ -12,22 +15,26 @@ from torch.utils.data import TensorDataset
 from utils import Net, get_mnist_data
 
 
+rpyc.core.vinegar._generic_exceptions_cache["pysyncobj.syncobj.SyncObjException"] = SyncObjException
+
+
 def train(model, device, train_loader, optimizer, conn):
+    get_model_weights_from_server(model, conn)
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
         output = model(data)
         loss = F.nll_loss(output, target)
         loss.backward()
-        grads = []
-        for param in model.parameters():
-            grads.append(param.grad.cpu().numpy())
-        conn.root.send_gradient(grads)
-        if batch_idx % 5 == 0:
+        if batch_idx % 10 == 0:
+            grads = []
+            for param in model.parameters():
+                grads.append(param.grad.cpu().numpy())
+            conn.root.send_gradient(grads)
             get_model_weights_from_server(model, conn)
+            optimizer.zero_grad()
         if batch_idx % 20 == 0:
-            conn.root.get_server_availability()
+            assert(conn.root.get_server_availability())
 
 
 def test(model, device, test_loader, epoch):
@@ -59,6 +66,7 @@ def get_model_weights_from_server(model, conn):
         for param, weight in zip(model.parameters(), weights):
             param.data = torch.as_tensor(np.array(weight), device=param.device)
 
+
 def get_leader_connection(raft_servers):
     while True:
         time.sleep(0.1)
@@ -66,9 +74,16 @@ def get_leader_connection(raft_servers):
             try:
                 conn = rpyc.connect("localhost", port=server, config={"allow_pickle": True})
                 if conn.root.get_server_availability():
-                    return conn
+                    return conn, server
             except ConnectionRefusedError:
                 pass
+
+
+def reset_model_params(model, conn):
+    params = []
+    for param in model.parameters():
+        params.append(param.data.cpu().numpy())
+    conn.root.reset_model_params(params)
 
 
 if __name__ == "__main__":
@@ -79,7 +94,8 @@ if __name__ == "__main__":
     parser.add_argument("--raft_servers", dest="raft_servers", type=int, nargs='+', required=True)
     args = parser.parse_args()
 
-    conn = get_leader_connection(args.raft_servers)
+    conn, port = get_leader_connection(args.raft_servers)
+    print(f"Connection to server at port {port} established")
 
 
     X_train, y_train = get_mnist_data(partition=args.partiton_id, split="train")
@@ -98,18 +114,36 @@ if __name__ == "__main__":
 
 
     model = Net()
-    get_model_weights_from_server(model, conn)
     print("Model weights initialized!")
     model = model.to(device)
     optimizer = optim.SGD(model.parameters(), lr=0)
+    connection_reset = False
 
-    epoch = 1
+    epoch = 0
     while True:
         try:
-            train(model, device, train_loader, optimizer, conn)
+            if connection_reset:
+                reset_model_params(model, conn)
+                connection_reset = False
             test(model, device, test_loader, epoch)
+            train(model, device, train_loader, optimizer, conn)
             conn.root.mark_epoch_done()
             epoch += 1
-        except:
+        except EOFError:
+            print("Connection to server disrupted, reconnecting...")
             time.sleep(0.1)
-            conn = get_leader_connection(args.raft_servers)
+            conn, port = get_leader_connection(args.raft_servers)
+            connection_reset = True
+            print(f"Connection to server at port {port} established")
+        except AsyncResultTimeout:
+            print("Connection to server timed out, reconnecting...")
+            time.sleep(0.1)
+            conn, port = get_leader_connection(args.raft_servers)
+            connection_reset = True
+            print(f"Connection to server at port {port} established")
+        except SyncObjException:
+            print("Syncing error, reconnecting...")
+            time.sleep(0.1)
+            conn, port = get_leader_connection(args.raft_servers)
+            connection_reset = True
+            print(f"Connection to server at port {port} established")
